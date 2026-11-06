@@ -1,0 +1,23 @@
+# Dependencies
+node_modules/
+
+# Build output and generated artifacts
+frontend/build/
+coverage/
+*.tsbuildinfo
+*.map
+
+# Local environment files
+.env
+.env.*
+!.env.example
+
+# Logs and temporary files
+*.log
+*.tmp
+*.swp
+*.swo
+
+# Operating system files
+.DS_Store
+Thumbs.db
