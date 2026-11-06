@@ -1,0 +1,32 @@
+# Optional all-in-one deployment for the Email Validator.
+#
+# Usage:
+#   docker-compose up --build
+#
+# Backend:  http://localhost:5000
+# Frontend: http://localhost:3000
+#
+# Backend configuration is taken from backend/.env.
+# Adjust CORS_ORIGINS in backend/.env to match your frontend origin.
+
+version: "3.8"
+
+services:
+  backend:
+    build: ./backend
+    ports:
+      - "5000:5000"
+    env_file:
+      - ./backend/.env
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        - REACT_APP_API_URL=http://localhost:5000/api
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
