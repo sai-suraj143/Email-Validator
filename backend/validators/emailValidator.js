@@ -5,6 +5,9 @@
  * specific mailbox exists. Therefore this module never returns a status
  * claiming a mailbox is "Valid". The strongest honest claim is
  * `domain_accepts_mail` with `mailboxVerified: false`.
+ *
+ * `validateEmail(email, options)` accepts an optional `options` object:
+ *   - cache: a DomainCache instance used to memoize per-domain DNS lookups.
  */
 
 const validator = require('validator');
@@ -46,61 +49,97 @@ function withTimeout(promise, ms = DNS_TIMEOUT_MS) {
 }
 
 /**
- * Resolve MX records for a domain with a timeout.
- * Returns { mx: boolean|null, code: string|null }.
+ * Resolve MX records for a domain with a timeout, using the cache when
+ * provided. Returns { mx: boolean|null, code: string|null }.
  *   mx: true  -> MX records exist
  *   mx: false -> domain exists but no MX records (ENODATA / empty)
  *   mx: null  -> could not determine (not found / timeout / error)
  */
-async function lookupMx(domain) {
+async function lookupMx(domain, cache) {
+  const cacheKey = domain;
+  if (cache && cache.has(cacheKey, 'mx')) {
+    return cache.get(cacheKey, 'mx');
+  }
+
+  let result;
   try {
     const records = await withTimeout(dns.resolveMx(domain));
     if (Array.isArray(records) && records.length > 0) {
-      return { mx: true, code: null };
+      result = { mx: true, code: null };
+    } else {
+      // Empty list: domain exists, no MX records.
+      result = { mx: false, code: 'ENODATA' };
     }
-    // Empty list: domain exists, no MX records.
-    return { mx: false, code: 'ENODATA' };
   } catch (err) {
     const code = err && err.code ? err.code : 'UNKNOWN';
     // Domain does not exist at all.
     if (code === 'ENOTFOUND') {
-      return { mx: null, code: 'ENOTFOUND' };
+      result = { mx: null, code: 'ENOTFOUND' };
+    } else if (code === 'ENODATA') {
+      // Domain exists but no MX of this type.
+      result = { mx: false, code: 'ENODATA' };
+    } else if (
+      code === 'ETIMEOUT' ||
+      code === 'ECONNREFUSED' ||
+      code === 'ECONNRESET'
+    ) {
+      // Timeout or temporary failure -> not treated as invalid.
+      result = { mx: null, code };
+    } else {
+      // Any other lookup failure -> treat as indeterminate DNS error.
+      result = { mx: null, code: code || 'UNKNOWN' };
     }
-    // Domain exists but no MX of this type.
-    if (code === 'ENODATA') {
-      return { mx: false, code: 'ENODATA' };
-    }
-    // Timeout or temporary failure -> not treated as invalid.
-    if (code === 'ETIMEOUT' || code === 'ECONNREFUSED' || code === 'ECONNRESET') {
-      return { mx: null, code: code };
-    }
-    // Any other lookup failure -> treat as indeterminate DNS error.
-    return { mx: null, code: code || 'UNKNOWN' };
   }
+
+  if (cache) cache.set(cacheKey, result, 'mx');
+  return result;
 }
 
 /**
  * Resolve A / AAAA records for a domain (fallback when no MX records).
- * Returns true if any address record exists (domain is reachable).
+ * Returns true if any address record exists (domain is reachable), null if
+ * the lookup timed out / temporarily failed, false if domain not found.
  */
-async function hasAddressRecords(domain) {
+async function hasAddressRecords(domain, cache) {
   for (const rr of ['A', 'AAAA']) {
+    const cacheKey = domain;
+    if (cache && cache.has(cacheKey, rr)) {
+      const cached = cache.get(cacheKey, rr);
+      if (cached === null) return null;
+      if (cached === true) return true;
+      // cached false -> try next record type
+      continue;
+    }
+
+    let found;
     try {
       const records = await withTimeout(dns.resolve(domain, rr));
-      if (Array.isArray(records) && records.length > 0) {
-        return true;
-      }
+      found = Array.isArray(records) && records.length > 0;
     } catch (err) {
       const code = err && err.code ? err.code : '';
-      // ENODATA means domain exists but no record of this type; try next type.
-      if (code === 'ENODATA') continue;
-      // ENOTFOUND means domain doesn't exist.
-      if (code === 'ENOTFOUND') return false;
-      // Timeout / temporary failure -> indeterminate.
-      if (code === 'ETIMEOUT' || code === 'ECONNREFUSED' || code === 'ECONNRESET') {
+      if (code === 'ENODATA') {
+        // Domain exists but no record of this type; try next type.
+        if (cache) cache.set(cacheKey, false, rr);
+        continue;
+      }
+      if (code === 'ENOTFOUND') {
+        if (cache) cache.set(cacheKey, false, rr);
+        return false;
+      }
+      if (
+        code === 'ETIMEOUT' ||
+        code === 'ECONNREFUSED' ||
+        code === 'ECONNRESET'
+      ) {
+        if (cache) cache.set(cacheKey, null, rr);
         return null;
       }
+      if (cache) cache.set(cacheKey, false, rr);
+      continue;
     }
+
+    if (cache) cache.set(cacheKey, found, rr);
+    if (found) return true;
   }
   return false;
 }
@@ -152,7 +191,9 @@ function baseResult(email) {
  *     mailboxVerified: false
  *   }
  */
-async function validateEmail(email) {
+async function validateEmail(email, options = {}) {
+  const { cache } = options;
+
   // Non-string / empty input.
   if (!email || typeof email !== 'string') {
     const result = baseResult(String(email ?? ''));
@@ -198,7 +239,7 @@ async function validateEmail(email) {
   }
 
   // --- 3. DNS MX lookup (with 5s timeout) ---
-  const mx = await lookupMx(domain);
+  const mx = await lookupMx(domain, cache);
 
   // DNS error / temporary failure / not found -> do not claim invalid.
   if (mx.mx === null) {
@@ -222,7 +263,7 @@ async function validateEmail(email) {
 
   // mx === false : domain exists but no MX records. Fall back to A/AAAA.
   result.checks.mx = false;
-  const addressResult = await hasAddressRecords(domain);
+  const addressResult = await hasAddressRecords(domain, cache);
 
   if (addressResult === null) {
     // A/AAAA lookup timed out / temporarily failed.

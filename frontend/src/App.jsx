@@ -96,7 +96,7 @@ function App() {
           className={`tab-btn ${activeTab === 'bulk' ? 'active' : ''}`}
           onClick={() => { setActiveTab('bulk'); setError(''); }}
         >
-          Bulk Check (10-100 Emails)
+          Bulk Check
         </button>
       </div>
 
@@ -157,19 +157,23 @@ function App() {
               <div className="metrics-row">
                 <div className="metric-card">
                   <h4>Total Verified</h4>
-                  <p>{bulkResults.summary.total}</p>
+                  <p>{bulkResults.summary?.processed ?? 0}</p>
                 </div>
                 <div className="metric-card valid">
                   <h4>Valid Leads</h4>
-                  <p>{bulkResults.summary.valid}</p>
+                  <p>{(bulkResults.summary?.byStatus?.domain_accepts_mail ?? 0)}</p>
                 </div>
                 <div className="metric-card invalid">
                   <h4>Invalid/Risky</h4>
-                  <p>{bulkResults.summary.invalid}</p>
+                  <p>{(
+                    (bulkResults.summary?.byStatus?.invalid_syntax ?? 0) +
+                    (bulkResults.summary?.byStatus?.domain_not_found ?? 0) +
+                    (bulkResults.summary?.byStatus?.dns_error ?? 0)
+                  )}</p>
                 </div>
                 <div className="metric-card disposable">
                   <h4>Disposable</h4>
-                  <p>{bulkResults.summary.disposable}</p>
+                  <p>{bulkResults.summary?.byStatus?.disposable ?? 0}</p>
                 </div>
               </div>
 
